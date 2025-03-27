@@ -1,0 +1,307 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for AWS Cost Forecasting and Microsoft Teams Notification (Shows Both Usage and Credits)'
+
+Parameters:
+  TeamsWebhookUrl:
+    Type: String
+    Description: 'The Microsoft Teams webhook URL to post cost notifications'
+    NoEcho: true
+  
+  NotificationTime:
+    Type: String
+    Default: '0 9 * * ? *'
+    Description: 'Schedule expression for when to send notifications (default: 9 AM UTC daily)'
+
+Resources:
+  # IAM Role for Lambda
+  CostMonitorLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: CostExplorerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ce:GetCostForecast'
+                  - 'ce:GetCostAndUsage'
+                Resource: '*'
+
+  # Lambda Function
+  CostMonitorLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: AWS-Cost-Monitor-Teams
+      Description: 'Function to monitor AWS costs and send notifications to Microsoft Teams (Shows Both Usage and Credits)'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt CostMonitorLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          TEAMS_WEBHOOK_URL: !Ref TeamsWebhookUrl
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import logging
+          import os
+          from datetime import datetime, date, timedelta
+          import urllib.request
+          import urllib.parse
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def get_first_day_of_current_month():
+              today = date.today()
+              return date(today.year, today.month, 1).strftime('%Y-%m-%d')
+
+          def get_first_day_of_next_month():
+              today = date.today()
+              if today.month == 12:
+                  return date(today.year + 1, 1, 1).strftime('%Y-%m-%d')
+              else:
+                  return date(today.year, today.month + 1, 1).strftime('%Y-%m-%d')
+
+          def get_last_month_total_cost():
+              client = boto3.client('ce')
+              
+              # Get the first day of last month and first day of current month
+              today = date.today()
+              if today.month == 1:
+                  first_day_last_month = date(today.year - 1, 12, 1).strftime('%Y-%m-%d')
+              else:
+                  first_day_last_month = date(today.year, today.month - 1, 1).strftime('%Y-%m-%d')
+              
+              first_day_current_month = get_first_day_of_current_month()
+              
+              # Added filter to only include usage costs, excluding credits
+              response = client.get_cost_and_usage(
+                  TimePeriod={
+                      'Start': first_day_last_month,
+                      'End': first_day_current_month
+                  },
+                  Granularity='MONTHLY',
+                  Metrics=['UnblendedCost'],
+                  Filter={
+                      'Dimensions': {
+                          'Key': 'RECORD_TYPE',
+                          'Values': ['Usage']
+                      }
+                  }
+              )
+              
+              return float(response['ResultsByTime'][0]['Total']['UnblendedCost']['Amount'])
+
+          def get_forecasted_month_end_costs():
+              # Create a Cost Explorer client
+              client = boto3.client('ce')
+              
+              # Use today's date as the start date for forecasting
+              today = date.today().strftime('%Y-%m-%d')
+              end_date = get_first_day_of_next_month()
+              
+              # Added filter to only include usage costs, excluding credits
+              response = client.get_cost_forecast(
+                  TimePeriod={
+                      'Start': today,
+                      'End': end_date
+                  },
+                  Metric='UNBLENDED_COST',
+                  Granularity='MONTHLY',
+                  Filter={
+                      'Dimensions': {
+                          'Key': 'RECORD_TYPE',
+                          'Values': ['Usage']
+                      }
+                  }
+              )
+              
+              # Extract the forecasted cost
+              forecasted_cost = float(response['Total']['Amount'])
+              forecasted_cost_unit = response['Total']['Unit']
+              
+              return forecasted_cost, forecasted_cost_unit
+
+          def get_current_month_to_date_costs():
+              client = boto3.client('ce')
+              
+              # Get date ranges for current month to today
+              start_date = get_first_day_of_current_month()
+              today = date.today().strftime('%Y-%m-%d')
+              tomorrow = (date.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+              
+              # Added filter to only include usage costs, excluding credits
+              response = client.get_cost_and_usage(
+                  TimePeriod={
+                      'Start': start_date,
+                      'End': tomorrow  # End date is exclusive, so we need tomorrow
+                  },
+                  Granularity='MONTHLY',
+                  Metrics=['UnblendedCost'],
+                  Filter={
+                      'Dimensions': {
+                          'Key': 'RECORD_TYPE',
+                          'Values': ['Usage']
+                      }
+                  }
+              )
+              
+              return float(response['ResultsByTime'][0]['Total']['UnblendedCost']['Amount'])
+              
+          def get_current_month_credits():
+              client = boto3.client('ce')
+              
+              # Get date ranges for current month to today
+              start_date = get_first_day_of_current_month()
+              tomorrow = (date.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+              
+              # Get all costs (no filter)
+              response_all = client.get_cost_and_usage(
+                  TimePeriod={
+                      'Start': start_date,
+                      'End': tomorrow
+                  },
+                  Granularity='MONTHLY',
+                  Metrics=['UnblendedCost']
+              )
+              
+              total_cost = float(response_all['ResultsByTime'][0]['Total']['UnblendedCost']['Amount'])
+              
+              # Get only credits
+              response_credits = client.get_cost_and_usage(
+                  TimePeriod={
+                      'Start': start_date,
+                      'End': tomorrow
+                  },
+                  Granularity='MONTHLY',
+                  Metrics=['UnblendedCost'],
+                  Filter={
+                      'Dimensions': {
+                          'Key': 'RECORD_TYPE',
+                          'Values': ['Credit', 'Refund']
+                      }
+                  }
+              )
+              
+              # Credits are typically negative values
+              if response_credits['ResultsByTime'] and 'Total' in response_credits['ResultsByTime'][0]:
+                  credits_amount = float(response_credits['ResultsByTime'][0]['Total']['UnblendedCost']['Amount'])
+              else:
+                  credits_amount = 0.0
+                  
+              return abs(credits_amount)  # Return as positive number for easier display
+
+          def post_to_teams(message_text):
+              teams_webhook_url = os.environ['TEAMS_WEBHOOK_URL']
+              
+              # Create Teams message card
+              card = {
+                  "@type": "MessageCard",
+                  "@context": "http://schema.org/extensions",
+                  "themeColor": "0076D7",
+                  "summary": "AWS Cost Report",
+                  "sections": [{
+                      "activityTitle": "AWS Cost Monitor",
+                      "activitySubtitle": datetime.now().strftime('%Y-%m-%d'),
+                      "activityImage": "https://img.icons8.com/color/48/000000/amazon-web-services.png",
+                      "facts": [],
+                      "text": message_text.replace("*", "**")  # Convert Slack bold to Teams bold
+                  }]
+              }
+              
+              req = urllib.request.Request(
+                  teams_webhook_url,
+                  data=json.dumps(card).encode('utf-8'),
+                  headers={'Content-Type': 'application/json'}
+              )
+              
+              response = urllib.request.urlopen(req)
+              return response.read()
+
+          def lambda_handler(event, context):
+              try:
+                  # Get current month-to-date costs
+                  current_costs = get_current_month_to_date_costs()
+                  
+                  # Get the forecasted costs
+                  forecasted_cost, unit = get_forecasted_month_end_costs()
+                  
+                  # Get last month's total cost
+                  last_month_cost = get_last_month_total_cost()
+                  
+                  # Get current month credits
+                  credits_amount = get_current_month_credits()
+                  
+                  # Calculate percent increases
+                  current_percent_increase = ((current_costs / last_month_cost) - 1) * 100
+                  forecast_percent_increase = ((forecasted_cost / last_month_cost) - 1) * 100
+                  
+                  # Format the message for Teams
+                  today = datetime.now().strftime('%Y-%m-%d')
+                  message = f"**AWS Cost Report for {today}**\n\n"
+                  message += f"**Current month costs:** ${current_costs:.2f}\n"
+                  message += f"↑ {current_percent_increase:.0f}% compared to last month for same period\n\n"
+                  message += f"**Forecasted month end costs:** ${forecasted_cost:.2f}\n"
+                  message += f"↑ {forecast_percent_increase:.0f}% compared to last month's total costs\n\n"
+                  message += f"**Credits remaining this month:** ${credits_amount:.2f}"
+                  
+                  # Post to Teams
+                  post_to_teams(message)
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps('Cost data successfully posted to Microsoft Teams')
+                  }
+              
+              except Exception as e:
+                  logger.error(f"Error: {str(e)}")
+                  
+                  # Post error message to Teams
+                  post_to_teams(f"Error retrieving AWS cost data: {str(e)}")
+                  
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f'Error retrieving cost data: {str(e)}')
+                  }
+
+  # EventBridge Rule for daily schedule
+  CostMonitorScheduleRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: AWS-Cost-Monitor-Teams-Daily-Schedule
+      Description: 'Trigger the cost monitor Lambda function daily for Teams notifications'
+      ScheduleExpression: !Sub 'cron(${NotificationTime})'
+      State: ENABLED
+      Targets:
+        - Id: CostMonitorLambdaTarget
+          Arn: !GetAtt CostMonitorLambda.Arn
+
+  # Permission for EventBridge to invoke Lambda
+  CostMonitorLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref CostMonitorLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt CostMonitorScheduleRule.Arn
+
+Outputs:
+  LambdaFunctionName:
+    Description: 'Name of the Lambda function'
+    Value: !Ref CostMonitorLambda
+  EventRuleName:
+    Description: 'Name of the EventBridge rule'
+    Value: !Ref CostMonitorScheduleRule

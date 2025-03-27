@@ -1,12 +1,12 @@
 # AWS Cost Monitor
 
-A CloudFormation template for AWS cost monitoring and Slack notifications developed by [DNX Solutions](https://www.dnx.solutions/).
+A CloudFormation template for AWS cost monitoring with Slack or Microsoft Teams notifications developed by [DNX Solutions](https://www.dnx.solutions/).
 
 ![AWS Cost Monitor Screenshot](./screenshot.png)
 
 ## Overview
 
-AWS Cost Monitor is a serverless solution that provides daily or scheduled cost monitoring and forecasting for your AWS account. It sends automated notifications to a Slack channel with real-time cost data.
+AWS Cost Monitor is a serverless solution that provides daily or scheduled cost monitoring and forecasting for your AWS account. It sends automated notifications to a Slack channel or Microsoft Teams channel with real-time cost data.
 
 The tool helps teams maintain visibility of AWS costs, track budget trends, and quickly identify unexpected spending increases.
 
@@ -19,6 +19,7 @@ The tool helps teams maintain visibility of AWS costs, track budget trends, and 
 - **Customizable Schedule**: Run on your preferred cadence (daily, specific weekdays, etc.)
 - **Serverless Architecture**: No infrastructure to maintain
 - **Simple Deployment**: Single-click deployment through CloudFormation
+- **Multiple Notification Options**: Support for both Slack and Microsoft Teams
 
 ## Architecture
 
@@ -28,16 +29,19 @@ The solution uses the following AWS services:
 - **AWS Cost Explorer API**: Retrieves current and forecasted cost data
 - **Amazon EventBridge**: Schedules regular cost reporting
 - **AWS IAM**: Manages permissions for accessing cost data
-- **Slack Webhooks API**: Delivers notifications to your team
+- **Webhook Integrations**: Delivers notifications to your team via Slack or Microsoft Teams
 
 ## Installation
 
 ### Prerequisites
 
 - An AWS account with permissions to create Lambda functions, IAM roles, and EventBridge rules
-- A Slack workspace with permissions to create webhook integrations
+- A Slack workspace with permissions to create webhook integrations (for Slack notifications)
+- A Microsoft Teams team with permissions to create incoming webhooks (for Teams notifications)
 
 ### Deployment Steps
+
+#### For Slack Notifications
 
 1. Create a Slack webhook URL:
    - Go to your Slack workspace's App Directory
@@ -46,7 +50,7 @@ The solution uses the following AWS services:
    - Create a new webhook for the channel where you want to receive notifications
    - Copy the webhook URL
 
-2. Deploy the CloudFormation template:
+2. Deploy the CloudFormation template (`forecast.yml`):
    - Log in to the AWS Console of your Management account (the account that manages the AWS Organization)
    - Change to `us-east-1` region (N. Virginia)
    - Navigate to CloudFormation
@@ -60,14 +64,50 @@ The solution uses the following AWS services:
 
 4. Verify the installation by checking your Slack channel for cost notifications
 
+#### For Microsoft Teams Notifications
+
+1. Create a Microsoft Teams webhook URL:
+   - Go to the Teams channel where you want to receive notifications
+   - Click the "..." menu next to the channel name, click "Manage Channel"
+   - Under "Connectors", click "Edit"
+   - Find "Incoming Webhook" and click "Configure"
+   - Provide a name for the webhook (e.g., "AWS Cost Monitor")
+   - Optionally upload an icon for the webhook
+   - Click "Create" and copy the webhook URL
+
+2. Deploy the CloudFormation template (`forecast-teams.yml`):
+   - Log in to the AWS Console of your Management account (the account that manages the AWS Organization)
+   - Change to `us-east-1` region (N. Virginia)
+   - Navigate to CloudFormation
+   - Click "Create stack" > "With new resources (standard)"
+   - Upload the template file or use an S3 URL
+   - Fill in the parameters:
+     - `TeamsWebhookUrl`: The webhook URL from step 1
+     - `NotificationTime`: The cron expression for when to send notifications
+
+3. Wait for the stack creation to complete (typically 1-2 minutes)
+
+4. Verify the installation by checking your Microsoft Teams channel for cost notifications
+
 ## Configuration Options
 
-The CloudFormation template accepts the following parameters:
+### Slack Template Parameters
+
+The Slack CloudFormation template (`forecast.yml`) accepts the following parameters:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `SlackWebhookUrl` | The Slack webhook URL to post cost notifications | (Required) |
-| `NotificationTime` | Cron expression for when to send notifications | `0 9 ? * MON,WED,FRI *` (9 AM UTC on Mon, Wed, Fri) |
+| `NotificationTime` | Cron expression for when to send notifications | `0 9 * * ? *` (9 AM UTC daily) |
+
+### Microsoft Teams Template Parameters
+
+The Microsoft Teams CloudFormation template (`forecast-teams.yml`) accepts the following parameters:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `TeamsWebhookUrl` | The Microsoft Teams webhook URL to post cost notifications | (Required) |
+| `NotificationTime` | Cron expression for when to send notifications | `0 9 * * ? *` (9 AM UTC daily) |
 
 ## Cost Considerations
 
@@ -101,7 +141,7 @@ The Lambda function can be modified to include additional cost metrics or filter
 Common issues:
 
 1. **No notifications received**:
-   - Check that the Slack webhook URL is correct
+   - Check that the webhook URL is correct (Slack or Teams)
    - Verify the Lambda execution role has proper permissions
    - Check Lambda CloudWatch logs for errors
 
