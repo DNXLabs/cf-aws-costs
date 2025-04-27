@@ -235,18 +235,22 @@ Resources:
                   # Get current month credits
                   credits_amount = get_current_month_credits()
                   
-                  # Calculate percent increases
-                  current_percent_increase = ((current_costs / last_month_cost) - 1) * 100
-                  forecast_percent_increase = ((forecasted_cost / last_month_cost) - 1) * 100
+                  # Calculate percent changes
+                  current_percent_change = ((current_costs / last_month_cost) - 1) * 100
+                  forecast_percent_change = ((forecasted_cost / last_month_cost) - 1) * 100
+                  
+                  # Determine arrows based on whether costs are increasing or decreasing
+                  current_arrow = "↑" if current_percent_change >= 0 else "↓"
+                  forecast_arrow = "↑" if forecast_percent_change >= 0 else "↓"
                   
                   # Format the message for Slack
                   today = datetime.now().strftime('%Y-%m-%d')
                   message = f"*AWS Cost Report for {today}*\n\n"
-                  message += f"*Current month costs:* ${current_costs:.2f}\n"
-                  message += f"↑ {current_percent_increase:.0f}% compared to last month for same period\n\n"
-                  message += f"*Forecasted month end costs:* ${forecasted_cost:.2f}\n"
-                  message += f"↑ {forecast_percent_increase:.0f}% compared to last month's total costs\n\n"
-                  message += f"*Credits remaining this month:* ${credits_amount:.2f}"
+                  message += f"*Current month usage (without credits applied):* ${current_costs:.2f}\n"
+                  message += f"{current_arrow} {abs(current_percent_change):.0f}% compared to last month for same period\n\n"
+                  message += f"*Forecasted month end usage:* ${forecasted_cost:.2f}\n"
+                  message += f"{forecast_arrow} {abs(forecast_percent_change):.0f}% compared to last month's total usage\n\n"
+                  message += f"*Credits consumed this month:* ${credits_amount:.2f}"
                   
                   # Post to Slack
                   post_to_slack(message)
